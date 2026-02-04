@@ -359,6 +359,7 @@ export function createOpenClawCodingTools(options?: {
       requesterAgentIdOverride: agentId,
     }),
   ];
+  // Security: treat unknown/undefined as unauthorized (opt-in, not opt-out)
   const senderIsOwner = options?.senderIsOwner === true;
   const toolsWithOwnerGuard = tools.map((tool) => {
     if (normalizeToolName(tool.name) !== "whatsapp_login") {
