@@ -25,6 +25,8 @@ export async function runSessionsSendA2AFlow(params: {
   requesterChannel?: GatewayMessageChannel;
   roundOneReply?: string;
   waitRunId?: string;
+  gatewayUrl?: string;
+  gatewayToken?: string;
 }) {
   const runContextId = params.waitRunId ?? "unknown";
   try {
@@ -33,6 +35,8 @@ export async function runSessionsSendA2AFlow(params: {
     if (!primaryReply && params.waitRunId) {
       const waitMs = Math.min(params.announceTimeoutMs, 60_000);
       const wait = await callGateway<{ status: string }>({
+        url: params.gatewayUrl,
+        token: params.gatewayToken,
         method: "agent.wait",
         params: {
           runId: params.waitRunId,
@@ -114,6 +118,8 @@ export async function runSessionsSendA2AFlow(params: {
     if (announceTarget && announceReply && announceReply.trim() && !isAnnounceSkip(announceReply)) {
       try {
         await callGateway({
+          url: params.gatewayUrl,
+          token: params.gatewayToken,
           method: "send",
           params: {
             to: announceTarget.to,

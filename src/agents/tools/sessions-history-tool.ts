@@ -19,6 +19,8 @@ const SessionsHistoryToolSchema = Type.Object({
   sessionKey: Type.String(),
   limit: Type.Optional(Type.Number({ minimum: 1 })),
   includeTools: Type.Optional(Type.Boolean()),
+  gatewayUrl: Type.Optional(Type.String()),
+  gatewayToken: Type.Optional(Type.String()),
 });
 
 const SESSIONS_HISTORY_MAX_BYTES = 80 * 1024;
@@ -153,9 +155,13 @@ function resolveSandboxSessionToolsVisibility(cfg: ReturnType<typeof loadConfig>
 async function isSpawnedSessionAllowed(params: {
   requesterSessionKey: string;
   targetSessionKey: string;
+  gatewayUrl?: string;
+  gatewayToken?: string;
 }): Promise<boolean> {
   try {
     const list = await callGateway<{ sessions: Array<SessionListRow> }>({
+      url: params.gatewayUrl,
+      token: params.gatewayToken,
       method: "sessions.list",
       params: {
         includeGlobal: false,
@@ -185,6 +191,8 @@ export function createSessionsHistoryTool(opts?: {
       const sessionKeyParam = readStringParam(params, "sessionKey", {
         required: true,
       });
+      const gatewayUrl = readStringParam(params, "gatewayUrl", { trim: false });
+      const gatewayToken = readStringParam(params, "gatewayToken", { trim: false });
       const cfg = loadConfig();
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const visibility = resolveSandboxSessionToolsVisibility(cfg);
@@ -219,6 +227,8 @@ export function createSessionsHistoryTool(opts?: {
         const ok = await isSpawnedSessionAllowed({
           requesterSessionKey: requesterInternalKey,
           targetSessionKey: resolvedKey,
+          gatewayUrl,
+          gatewayToken,
         });
         if (!ok) {
           return jsonResult({
@@ -254,6 +264,8 @@ export function createSessionsHistoryTool(opts?: {
           : undefined;
       const includeTools = Boolean(params.includeTools);
       const result = await callGateway<{ messages: Array<unknown> }>({
+        url: gatewayUrl,
+        token: gatewayToken,
         method: "chat.history",
         params: { sessionKey: resolvedKey, limit },
       });

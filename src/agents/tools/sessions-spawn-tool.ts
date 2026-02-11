@@ -33,6 +33,8 @@ const SessionsSpawnToolSchema = Type.Object({
   // Back-compat alias. Prefer runTimeoutSeconds.
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
   cleanup: optionalStringEnum(["delete", "keep"] as const),
+  gatewayUrl: Type.Optional(Type.String()),
+  gatewayToken: Type.Optional(Type.String()),
 });
 
 function splitModelRef(ref?: string) {
@@ -87,6 +89,8 @@ export function createSessionsSpawnTool(opts?: {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const task = readStringParam(params, "task", { required: true });
+      const gatewayUrl = readStringParam(params, "gatewayUrl", { trim: false });
+      const gatewayToken = readStringParam(params, "gatewayToken", { trim: false });
       const label = typeof params.label === "string" ? params.label.trim() : "";
       const requestedAgentId = readStringParam(params, "agentId");
       const modelOverride = readStringParam(params, "model");
@@ -194,6 +198,8 @@ export function createSessionsSpawnTool(opts?: {
       if (resolvedModel) {
         try {
           await callGateway({
+            url: gatewayUrl,
+            token: gatewayToken,
             method: "sessions.patch",
             params: { key: childSessionKey, model: resolvedModel },
             timeoutMs: 10_000,
@@ -217,6 +223,8 @@ export function createSessionsSpawnTool(opts?: {
       if (thinkingOverride !== undefined) {
         try {
           await callGateway({
+            url: gatewayUrl,
+            token: gatewayToken,
             method: "sessions.patch",
             params: {
               key: childSessionKey,
@@ -246,6 +254,8 @@ export function createSessionsSpawnTool(opts?: {
       let childRunId: string = childIdem;
       try {
         const response = await callGateway<{ runId: string }>({
+          url: gatewayUrl,
+          token: gatewayToken,
           method: "agent",
           params: {
             message: task,

@@ -32,6 +32,8 @@ const SessionsSendToolSchema = Type.Object({
   agentId: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
   message: Type.String(),
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+  gatewayUrl: Type.Optional(Type.String()),
+  gatewayToken: Type.Optional(Type.String()),
 });
 
 export function createSessionsSendTool(opts?: {
@@ -48,6 +50,8 @@ export function createSessionsSendTool(opts?: {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const message = readStringParam(params, "message", { required: true });
+      const gatewayUrl = readStringParam(params, "gatewayUrl", { trim: false });
+      const gatewayToken = readStringParam(params, "gatewayToken", { trim: false });
       const cfg = loadConfig();
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const visibility = cfg.agents?.defaults?.sandbox?.sessionToolsVisibility ?? "spawned";
@@ -80,6 +84,8 @@ export function createSessionsSendTool(opts?: {
 
       const listSessions = async (listParams: Record<string, unknown>) => {
         const result = await callGateway<{ sessions: Array<{ key: string }> }>({
+          url: gatewayUrl,
+          token: gatewayToken,
           method: "sessions.list",
           params: listParams,
           timeoutMs: 10_000,
@@ -135,6 +141,8 @@ export function createSessionsSendTool(opts?: {
         let resolvedKey = "";
         try {
           const resolved = await callGateway<{ key: string }>({
+            url: gatewayUrl,
+            token: gatewayToken,
             method: "sessions.resolve",
             params: resolveParams,
             timeoutMs: 10_000,
@@ -276,12 +284,16 @@ export function createSessionsSendTool(opts?: {
           requesterChannel,
           roundOneReply,
           waitRunId,
+          gatewayUrl,
+          gatewayToken,
         });
       };
 
       if (timeoutSeconds === 0) {
         try {
           const response = await callGateway<{ runId: string }>({
+            url: gatewayUrl,
+            token: gatewayToken,
             method: "agent",
             params: sendParams,
             timeoutMs: 10_000,
@@ -310,6 +322,8 @@ export function createSessionsSendTool(opts?: {
 
       try {
         const response = await callGateway<{ runId: string }>({
+          url: gatewayUrl,
+          token: gatewayToken,
           method: "agent",
           params: sendParams,
           timeoutMs: 10_000,
@@ -332,6 +346,8 @@ export function createSessionsSendTool(opts?: {
       let waitError: string | undefined;
       try {
         const wait = await callGateway<{ status?: string; error?: string }>({
+          url: gatewayUrl,
+          token: gatewayToken,
           method: "agent.wait",
           params: {
             runId,
@@ -370,6 +386,8 @@ export function createSessionsSendTool(opts?: {
       }
 
       const history = await callGateway<{ messages: Array<unknown> }>({
+        url: gatewayUrl,
+        token: gatewayToken,
         method: "chat.history",
         params: { sessionKey: resolvedKey, limit: 50 },
       });

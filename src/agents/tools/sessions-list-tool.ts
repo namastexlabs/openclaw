@@ -4,7 +4,7 @@ import type { AnyAgentTool } from "./common.js";
 import { loadConfig } from "../../config/config.js";
 import { callGateway } from "../../gateway/call.js";
 import { isSubagentSessionKey, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
-import { jsonResult, readStringArrayParam } from "./common.js";
+import { jsonResult, readStringArrayParam, readStringParam } from "./common.js";
 import {
   createAgentToAgentPolicy,
   classifySessionKind,
@@ -21,6 +21,8 @@ const SessionsListToolSchema = Type.Object({
   limit: Type.Optional(Type.Number({ minimum: 1 })),
   activeMinutes: Type.Optional(Type.Number({ minimum: 1 })),
   messageLimit: Type.Optional(Type.Number({ minimum: 0 })),
+  gatewayUrl: Type.Optional(Type.String()),
+  gatewayToken: Type.Optional(Type.String()),
 });
 
 function resolveSandboxSessionToolsVisibility(cfg: ReturnType<typeof loadConfig>) {
@@ -38,6 +40,8 @@ export function createSessionsListTool(opts?: {
     parameters: SessionsListToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
+      const gatewayUrl = readStringParam(params, "gatewayUrl", { trim: false });
+      const gatewayToken = readStringParam(params, "gatewayToken", { trim: false });
       const cfg = loadConfig();
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const visibility = resolveSandboxSessionToolsVisibility(cfg);
@@ -78,6 +82,8 @@ export function createSessionsListTool(opts?: {
       const messageLimit = Math.min(messageLimitRaw, 20);
 
       const list = await callGateway<{ sessions: Array<SessionListRow>; path: string }>({
+        url: gatewayUrl,
+        token: gatewayToken,
         method: "sessions.list",
         params: {
           limit,
@@ -195,6 +201,8 @@ export function createSessionsListTool(opts?: {
             mainKey,
           });
           const history = await callGateway<{ messages: Array<unknown> }>({
+            url: gatewayUrl,
+            token: gatewayToken,
             method: "chat.history",
             params: { sessionKey: resolvedKey, limit: messageLimit },
           });
