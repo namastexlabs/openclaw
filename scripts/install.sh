@@ -15,8 +15,11 @@ BUN_INSTALL_URL="https://bun.sh/install"
 BREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
 
 SKIP_BUILD=0
+FORCE_BUILD=0
+RESTART_SERVICE=0
 SKIP_SERVICE=0
 SHOW_HELP=0
+REPO_UPDATED=1
 
 BOLD='\033[1m'
 ACCENT='\033[38;2;255;77;77m'
@@ -59,6 +62,8 @@ Usage:
 
 Options:
   --skip-build      Skip `bun run build`
+  --force-build     Force build even when repo/artifacts look up-to-date
+  --restart         Restart running user service after update
   --skip-service    Skip systemd user service install/start
   --port PORT       Gateway port (default: 18789)
   --help, -h        Show this help
@@ -76,6 +81,8 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --skip-build) SKIP_BUILD=1 ;;
+      --force-build) FORCE_BUILD=1 ;;
+      --restart) RESTART_SERVICE=1 ;;
       --skip-service) SKIP_SERVICE=1 ;;
       --port) shift; SERVICE_PORT="${1:?--port requires a value}" ;;
       --help|-h) SHOW_HELP=1 ;;
@@ -203,12 +210,45 @@ ensure_nvm() {
 ensure_node_via_nvm() {
   log_section "[4/10] Node.js ${NODE_VERSION} via nvm (required)"
 
+  local default_alias
+  default_alias="$(run_target_shell "
+    set -euo pipefail
+    export NVM_DIR='${NVM_DIR}'
+    source \"\${NVM_DIR}/nvm.sh\"
+    nvm alias default 2>/dev/null | awk '{print \$3}'
+  " || true)"
+
+  if [[ "${default_alias}" == "${NODE_VERSION}" ]]; then
+    if run_target_shell "
+      set -euo pipefail
+      export NVM_DIR='${NVM_DIR}'
+      source \"\${NVM_DIR}/nvm.sh\"
+      nvm version '${NODE_VERSION}' >/dev/null
+    "; then
+      log_ok "nvm default already set to ${NODE_VERSION}; skipping install"
+    else
+      run_target_shell "
+        set -euo pipefail
+        export NVM_DIR='${NVM_DIR}'
+        source \"\${NVM_DIR}/nvm.sh\"
+        nvm install '${NODE_VERSION}'
+        nvm alias default '${NODE_VERSION}'
+      "
+    fi
+  else
+    run_target_shell "
+      set -euo pipefail
+      export NVM_DIR='${NVM_DIR}'
+      source \"\${NVM_DIR}/nvm.sh\"
+      nvm install '${NODE_VERSION}'
+      nvm alias default '${NODE_VERSION}'
+    "
+  fi
+
   run_target_shell "
     set -euo pipefail
     export NVM_DIR='${NVM_DIR}'
     source \"\${NVM_DIR}/nvm.sh\"
-    nvm install '${NODE_VERSION}'
-    nvm alias default '${NODE_VERSION}'
     nvm use '${NODE_VERSION}' >/dev/null
   "
 
@@ -295,8 +335,12 @@ ensure_swap() {
 
 prepare_layout() {
   log_section "[6/10] Layout"
-  maybe_sudo mkdir -p /opt/genie "${BIN_DIR}"
-  maybe_sudo chown -R "${TARGET_USER}:${TARGET_GROUP}" /opt/genie
+  if [[ -d "/opt/genie" && -w "/opt/genie" && -d "${BIN_DIR}" ]]; then
+    log_ok "/opt/genie already exists and is writable"
+  else
+    maybe_sudo mkdir -p /opt/genie "${BIN_DIR}"
+    maybe_sudo chown -R "${TARGET_USER}:${TARGET_GROUP}" /opt/genie
+  fi
   ensure_swap
   log_ok "/opt/genie ready (${TARGET_USER}:${TARGET_GROUP})"
 }
@@ -307,6 +351,7 @@ sync_repo() {
   if [[ ! -d "${INSTALL_DIR}" ]]; then
     log_info "Cloning ${REPO_URL} (${REPO_BRANCH})"
     run_target_shell "git clone --branch '${REPO_BRANCH}' '${REPO_URL}' '${INSTALL_DIR}'"
+    REPO_UPDATED=1
     log_ok "Repository cloned"
     return
   fi
@@ -316,14 +361,27 @@ sync_repo() {
   if run_target_shell "cd '${INSTALL_DIR}' && [[ -n \"\$(git status --porcelain)\" ]]"; then
     log_warn "Local changes detected in ${INSTALL_DIR}; skipping git pull"
     log_warn "Commit/stash changes if you want installer-managed updates"
+    REPO_UPDATED=1
     return
   fi
 
   log_info "Updating existing repository"
   run_target_shell "cd '${INSTALL_DIR}' && git remote set-url origin '${REPO_URL}'"
   run_target_shell "cd '${INSTALL_DIR}' && git fetch origin '${REPO_BRANCH}'"
+
+  local local_head remote_head
+  local_head="$(run_target_shell "cd '${INSTALL_DIR}' && git rev-parse HEAD")"
+  remote_head="$(run_target_shell "cd '${INSTALL_DIR}' && git rev-parse 'origin/${REPO_BRANCH}'")"
+
+  if [[ "${local_head}" == "${remote_head}" ]]; then
+    REPO_UPDATED=0
+    log_ok "Repository already up to date"
+    return
+  fi
+
   run_target_shell "cd '${INSTALL_DIR}' && git checkout -B '${REPO_BRANCH}' 'origin/${REPO_BRANCH}'"
   run_target_shell "cd '${INSTALL_DIR}' && git pull --ff-only origin '${REPO_BRANCH}'"
+  REPO_UPDATED=1
   log_ok "Repository updated"
 }
 
@@ -344,6 +402,13 @@ bun_install_and_build() {
   if [[ ${SKIP_BUILD} -eq 1 ]]; then
     log_warn "Skipping build (--skip-build)"
     return
+  fi
+
+  if [[ ${FORCE_BUILD} -eq 0 && ${REPO_UPDATED} -eq 0 ]]; then
+    if run_target_shell "[[ -f '${INSTALL_DIR}/dist/index.js' && '${INSTALL_DIR}/dist/index.js' -nt '${INSTALL_DIR}/package.json' ]]"; then
+      log_ok "Build artifacts are current and repo is unchanged; skipping build"
+      return
+    fi
   fi
 
   run_target_shell "
@@ -373,11 +438,16 @@ install_wrapper_and_cleanup() {
   local wrapper='#!/bin/bash
 exec "$HOME/.nvm/versions/node/v24.13.1/bin/node" "/opt/genie/openclaw/dist/index.js" "$@"'
 
-  maybe_sudo mkdir -p "${BIN_DIR}"
-  printf '%s
-' "${wrapper}" | maybe_sudo tee "${WRAPPER_PATH}" >/dev/null
-  maybe_sudo chmod +x "${WRAPPER_PATH}"
-  maybe_sudo chown "${TARGET_USER}:${TARGET_GROUP}" "${WRAPPER_PATH}"
+  if [[ -d "${BIN_DIR}" && -w "${BIN_DIR}" ]]; then
+    mkdir -p "${BIN_DIR}"
+    printf '%s\n' "${wrapper}" > "${WRAPPER_PATH}"
+    chmod +x "${WRAPPER_PATH}"
+  else
+    maybe_sudo mkdir -p "${BIN_DIR}"
+    printf '%s\n' "${wrapper}" | maybe_sudo tee "${WRAPPER_PATH}" >/dev/null
+    maybe_sudo chmod +x "${WRAPPER_PATH}"
+    maybe_sudo chown "${TARGET_USER}:${TARGET_GROUP}" "${WRAPPER_PATH}"
+  fi
   log_ok "Wrapper installed: ${WRAPPER_PATH}"
 
   local bashrc="${TARGET_HOME}/.bashrc"
@@ -438,6 +508,33 @@ systemctl_user() {
   fi
 }
 
+cleanup_system_gateway_service() {
+  local system_unit="/etc/systemd/system/${SERVICE_NAME}.service"
+
+  if [[ ! -f "${system_unit}" ]]; then
+    log_info "No system-level ${SERVICE_NAME}.service found"
+    return
+  fi
+
+  log_warn "Found system-level ${SERVICE_NAME}.service; cleaning up to avoid dual-service conflicts"
+
+  if maybe_sudo systemctl is-active --quiet "${SERVICE_NAME}"; then
+    maybe_sudo systemctl stop "${SERVICE_NAME}" || true
+    log_info "Stopped system service ${SERVICE_NAME}"
+  else
+    log_info "System service ${SERVICE_NAME} is not running"
+  fi
+
+  maybe_sudo systemctl disable "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  log_info "Disabled system service ${SERVICE_NAME} (if enabled)"
+
+  maybe_sudo rm -f "${system_unit}"
+  log_info "Removed ${system_unit}"
+
+  maybe_sudo systemctl daemon-reload
+  log_ok "System-level service cleanup complete"
+}
+
 install_service() {
   if [[ ${SKIP_SERVICE} -eq 1 ]]; then
     log_warn "Skipping service setup (--skip-service)"
@@ -447,25 +544,22 @@ install_service() {
   log_section "[10/10] systemd user service"
   command -v systemctl >/dev/null 2>&1 || die "systemctl not found"
 
+  cleanup_system_gateway_service
   ensure_linger
 
   local unit_dir="${TARGET_HOME}/.config/systemd/user"
   local unit_path="${unit_dir}/${SERVICE_NAME}.service"
   local node_exec="${TARGET_HOME}/.nvm/versions/node/${NODE_VERSION}/bin/node"
   local path_env="${TARGET_HOME}/.nvm/versions/node/${NODE_VERSION}/bin:${TARGET_HOME}/.bun/bin:/opt/genie/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
+  local git_short service_version desired_unit
+
+  git_short="$(run_target_shell "cd '${INSTALL_DIR}' && git rev-parse --short HEAD 2>/dev/null || true")"
+  [[ -n "${git_short}" ]] || git_short="unknown"
+  service_version="2026.2.12-namastex-${git_short}"
 
   run_as_target mkdir -p "${unit_dir}"
 
-  # If a service unit already exists (likely written by `openclaw doctor`),
-  # back it up but let our template replace it. Doctor will re-own it
-  # on next run with full environment injection.
-  if [[ -f "${unit_path}" ]]; then
-    run_as_target cp "${unit_path}" "${unit_path}.bak.$(date +%s)"
-    log_info "Backed up existing service unit"
-  fi
-
-  # Write minimal unit file (upstream doctor will enrich on first run)
-  run_as_target tee "${unit_path}" >/dev/null <<EOF
+  desired_unit="$(cat <<EOF
 [Unit]
 Description=OpenClaw Gateway (Namastex)
 After=network-online.target
@@ -479,18 +573,40 @@ KillMode=process
 WorkingDirectory=/opt/genie/openclaw
 Environment=HOME=${TARGET_HOME}
 Environment=PATH=${path_env}
+Environment=OPENCLAW_SERVICE_VERSION=${service_version}
 
 [Install]
 WantedBy=default.target
 EOF
+)"
 
-  log_ok "Service file written: ${unit_path}"
+  if [[ -f "${unit_path}" ]]; then
+    local current_unit
+    current_unit="$(run_as_target cat "${unit_path}" || true)"
+    if [[ "${current_unit}" == "${desired_unit}" ]]; then
+      log_info "Service file unchanged; skipping write"
+    else
+      run_as_target cp "${unit_path}" "${unit_path}.bak.$(date +%s)"
+      log_info "Backed up existing service unit"
+      printf '%s\n' "${desired_unit}" | run_as_target tee "${unit_path}" >/dev/null
+      log_ok "Service file updated: ${unit_path}"
+    fi
+  else
+    printf '%s\n' "${desired_unit}" | run_as_target tee "${unit_path}" >/dev/null
+    log_ok "Service file written: ${unit_path}"
+  fi
+
   systemctl_user daemon-reload || die "systemctl --user daemon-reload failed"
   systemctl_user enable "${SERVICE_NAME}" || die "enable failed for ${SERVICE_NAME}"
 
   if systemctl_user is-active --quiet "${SERVICE_NAME}"; then
-    log_warn "${SERVICE_NAME} is currently running — NOT restarting automatically"
-    log_warn "Run: systemctl --user restart ${SERVICE_NAME}"
+    if [[ ${RESTART_SERVICE} -eq 1 ]]; then
+      systemctl_user restart "${SERVICE_NAME}" || die "restart failed for ${SERVICE_NAME}"
+      log_ok "${SERVICE_NAME} restarted (--restart)"
+    else
+      log_warn "${SERVICE_NAME} is currently running — NOT restarting automatically"
+      log_warn "Run: systemctl --user restart ${SERVICE_NAME} (or pass --restart)"
+    fi
   else
     systemctl_user start "${SERVICE_NAME}" || die "start failed for ${SERVICE_NAME}"
     log_ok "${SERVICE_NAME} started"

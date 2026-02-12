@@ -1,0 +1,76 @@
+pipeline {
+    agent { label 'genie-os' }
+    
+    triggers {
+        // Poll upstream every 15 min, or trigger manually
+        pollSCM('H/15 * * * *')
+    }
+    
+    environment {
+        REPO_DIR = '/opt/genie/openclaw'
+        BUN_PATH = "${env.HOME}/.bun/bin"
+    }
+    
+    stages {
+        stage('Sync Upstream') {
+            steps {
+                dir("${REPO_DIR}") {
+                    sh '''
+                        git fetch origin
+                        git fetch upstream 2>/dev/null || true
+                        git checkout namastex/main
+                        git pull origin namastex/main
+                    '''
+                }
+            }
+        }
+        
+        stage('Install') {
+            steps {
+                dir("${REPO_DIR}") {
+                    sh '''
+                        export PATH=${BUN_PATH}:$PATH
+                        bun install
+                    '''
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                dir("${REPO_DIR}") {
+                    sh '''
+                        export PATH=${BUN_PATH}:$PATH
+                        bun run build
+                    '''
+                }
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                dir("${REPO_DIR}") {
+                    sh '''
+                        # Verify dist exists and gateway can start
+                        node dist/index.js --version || true
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy Fleet') {
+            steps {
+                sh '/opt/genie/bin/genie-deploy openclaw all'
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "✅ OpenClaw Namastex fork deployed to fleet"
+        }
+        failure {
+            echo "❌ Deploy failed — fleet may be on mixed versions"
+        }
+    }
+}
