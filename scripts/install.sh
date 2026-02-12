@@ -163,18 +163,26 @@ ensure_homebrew() {
 }
 
 ensure_system_packages() {
-  log_section "[2/10] System packages (Homebrew)"
+  log_section "[2/10] System packages"
   local missing=()
   command -v git >/dev/null 2>&1 || missing+=(git)
   command -v curl >/dev/null 2>&1 || missing+=(curl)
+  command -v unzip >/dev/null 2>&1 || missing+=(unzip)
 
   if [[ ${#missing[@]} -eq 0 ]]; then
-    log_ok "git/curl already present"
+    log_ok "git/curl/unzip already present"
     return
   fi
 
-  log_info "Installing with brew: ${missing[*]}"
-  run_target_shell "$(printf '%q ' "${BREW_BIN}" install "${missing[@]}")"
+  # Prefer apt for basic utils (instant binary install vs brew source compile)
+  if command -v apt-get >/dev/null 2>&1; then
+    log_info "Installing with apt: ${missing[*]}"
+    maybe_sudo apt-get update -qq >/dev/null 2>&1 || true
+    maybe_sudo apt-get install -y -qq "${missing[@]}" >/dev/null 2>&1
+  else
+    log_info "Installing with brew: ${missing[*]}"
+    run_target_shell "$(printf '%q ' "${BREW_BIN}" install "${missing[@]}")"
+  fi
   log_ok "System packages installed"
 }
 
@@ -228,20 +236,68 @@ ensure_bun_path() {
 
 ensure_bun() {
   log_section "[5/10] Bun"
-  if run_target_shell "export PATH='\$HOME/.bun/bin:\$PATH'; command -v bun >/dev/null 2>&1"; then
-    log_ok "Bun already installed ($(run_target_shell "export PATH='\$HOME/.bun/bin:\$PATH'; bun --version"))"
+  if run_target_shell "export PATH=\"\$HOME/.bun/bin:\$PATH\"; command -v bun >/dev/null 2>&1"; then
+    log_ok "Bun already installed ($(run_target_shell "export PATH=\"\$HOME/.bun/bin:\$PATH\"; bun --version"))"
   else
     log_info "Installing Bun..."
     run_target_shell "curl -fsSL '${BUN_INSTALL_URL}' | bash"
-    log_ok "Bun installed ($(run_target_shell "export PATH='\$HOME/.bun/bin:\$PATH'; bun --version"))"
+    log_ok "Bun installed ($(run_target_shell "export PATH=\"\$HOME/.bun/bin:\$PATH\"; bun --version"))"
   fi
   ensure_bun_path
+}
+
+ensure_swap() {
+  # bun install needs ~1.5GB; ensure adequate swap on small VMs/CTs
+  local swap_size
+  swap_size="$(free -m | awk '/^Swap:/ {print $2}')"
+  local mem_total
+  mem_total="$(free -m | awk '/^Mem:/ {print $2}')"
+
+  if (( mem_total + swap_size >= 2048 )); then
+    log_info "Memory + swap = $((mem_total + swap_size))MB (sufficient)"
+    return
+  fi
+
+  local swapfile="/swapfile"
+  if [[ -f "${swapfile}" ]]; then
+    log_info "Swapfile already exists"
+    return
+  fi
+
+  local need=$((2048 - mem_total - swap_size))
+  (( need < 512 )) && need=512
+  local need=$((2048 - mem_total - swap_size))
+  (( need < 512 )) && need=512
+  log_info "Creating ${need}MB swapfile (bun install needs memory)..."
+
+  local swapfile="/var/swap.img"
+  # Try dd (works on most filesystems); fallocate creates sparse files on some FS
+  if ! maybe_sudo dd if=/dev/zero of="${swapfile}" bs=1M count="${need}" status=none 2>/dev/null; then
+    log_warn "Could not create swapfile — bun install may OOM on low-memory systems"
+    log_warn "Minimum recommended: 2GB RAM (or set swap at host/hypervisor level)"
+    return
+  fi
+  maybe_sudo chmod 600 "${swapfile}"
+  if ! maybe_sudo mkswap "${swapfile}" >/dev/null 2>&1; then
+    maybe_sudo rm -f "${swapfile}"
+    log_warn "mkswap failed — filesystem may not support swapfiles (ZFS, containers)"
+    log_warn "Minimum recommended: 2GB RAM"
+    return
+  fi
+  if ! maybe_sudo swapon "${swapfile}" 2>/dev/null; then
+    maybe_sudo rm -f "${swapfile}"
+    log_warn "swapon failed — swap not supported in this environment"
+    log_warn "Minimum recommended: 2GB RAM"
+    return
+  fi
+  log_ok "Swap enabled: ${need}MB"
 }
 
 prepare_layout() {
   log_section "[6/10] Layout"
   maybe_sudo mkdir -p /opt/genie "${BIN_DIR}"
   maybe_sudo chown -R "${TARGET_USER}:${TARGET_GROUP}" /opt/genie
+  ensure_swap
   log_ok "/opt/genie ready (${TARGET_USER}:${TARGET_GROUP})"
 }
 
@@ -279,7 +335,7 @@ bun_install_and_build() {
     export NVM_DIR='${NVM_DIR}'
     source \"\${NVM_DIR}/nvm.sh\"
     nvm use '${NODE_VERSION}' >/dev/null
-    export PATH='\$HOME/.bun/bin:\$PATH'
+    export PATH=\"\$HOME/.bun/bin:\$PATH\"
     cd '${INSTALL_DIR}'
     bun install
   "
@@ -295,7 +351,7 @@ bun_install_and_build() {
     export NVM_DIR='${NVM_DIR}'
     source \"\${NVM_DIR}/nvm.sh\"
     nvm use '${NODE_VERSION}' >/dev/null
-    export PATH='\$HOME/.bun/bin:\$PATH'
+    export PATH=\"\$HOME/.bun/bin:\$PATH\"
     cd '${INSTALL_DIR}'
     bun run build
   "
