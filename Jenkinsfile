@@ -17,7 +17,8 @@ pipeline {
 
     environment {
         REPO_DIR     = '/opt/genie/openclaw'
-        INSTALL_SCRIPT = '/opt/genie/openclaw/scripts/install.sh'
+        // Use workspace path (Jenkins checkout), not build-host absolute path
+        INSTALL_SCRIPT = 'scripts/install.sh'
         BRANCH       = 'namastex/main'
         // genie-os is the build host — Jenkins SSHes there to build, then fans out
         BUILD_HOST   = 'genie@10.114.1.111'
