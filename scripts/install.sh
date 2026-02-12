@@ -438,12 +438,22 @@ install_wrapper_and_cleanup() {
   local wrapper='#!/bin/bash
 exec "$HOME/.nvm/versions/node/v24.13.1/bin/node" "/opt/genie/openclaw/dist/index.js" "$@"'
 
+  # CRITICAL: remove any symlink first — writing through a symlink
+  # to dist/index.js would corrupt the build output (discovered 2026-02-12)
+  if [[ -L "${WRAPPER_PATH}" ]]; then
+    rm -f "${WRAPPER_PATH}"
+    log_warn "Removed stale symlink at ${WRAPPER_PATH}"
+  fi
+
   if [[ -d "${BIN_DIR}" && -w "${BIN_DIR}" ]]; then
     mkdir -p "${BIN_DIR}"
     printf '%s\n' "${wrapper}" > "${WRAPPER_PATH}"
     chmod +x "${WRAPPER_PATH}"
   else
     maybe_sudo mkdir -p "${BIN_DIR}"
+    if [[ -L "${WRAPPER_PATH}" ]]; then
+      maybe_sudo rm -f "${WRAPPER_PATH}"
+    fi
     printf '%s\n' "${wrapper}" | maybe_sudo tee "${WRAPPER_PATH}" >/dev/null
     maybe_sudo chmod +x "${WRAPPER_PATH}"
     maybe_sudo chown "${TARGET_USER}:${TARGET_GROUP}" "${WRAPPER_PATH}"
