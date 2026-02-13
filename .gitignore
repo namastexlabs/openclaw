@@ -83,4 +83,5 @@ USER.md
 .agent/*.json
 !.agent/workflows/
 local/
-dist-client/
+# dist-client/ is tracked — pre-built artifact for enterprise install
+# (no Bun/git needed on target machines)
