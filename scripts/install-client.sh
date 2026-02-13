@@ -174,21 +174,21 @@ sync_repo() {
 }
 
 build() {
-  log_section "[4/5] Build"
+  log_section "[4/5] Build (client-only)"
 
   log_info "bun install..."
   (cd "${INSTALL_DIR}" && bun install)
 
   if [[ ${FORCE_BUILD} -eq 0 && ${REPO_UPDATED} -eq 0 ]]; then
-    if [[ -f "${INSTALL_DIR}/dist/index.js" && "${INSTALL_DIR}/dist/index.js" -nt "${INSTALL_DIR}/package.json" ]]; then
-      log_ok "Build artifacts current; skipping"
+    if [[ -f "${INSTALL_DIR}/dist-client/entry-client.js" && "${INSTALL_DIR}/dist-client/entry-client.js" -nt "${INSTALL_DIR}/package.json" ]]; then
+      log_ok "Client build artifacts current; skipping"
       return
     fi
   fi
 
-  log_info "bun run build..."
-  (cd "${INSTALL_DIR}" && bun run build)
-  log_ok "Build complete"
+  log_info "bun run build:client..."
+  (cd "${INSTALL_DIR}" && bun run build:client)
+  log_ok "Client build complete"
 }
 
 install_wrapper() {
@@ -205,7 +205,7 @@ install_wrapper() {
 
   cat > "${wrapper_path}" << WRAPPER
 #!/bin/bash
-exec "${node_bin}" "${INSTALL_DIR}/dist/index.js" "\$@"
+exec "${node_bin}" "${INSTALL_DIR}/dist-client/entry-client.js" "\$@"
 WRAPPER
   chmod +x "${wrapper_path}"
   log_ok "Wrapper: ${wrapper_path}"
