@@ -141,6 +141,8 @@ pipeline {
         stage('Health Checks') {
             when { expression { env.SKIP_DEPLOY != 'true' } }
             steps {
+                // Wait for slow hosts to finish restarting
+                sleep(time: 15, unit: 'SECONDS')
                 script {
                     def hosts = [
                         [ssh: 'genie@10.114.1.111', name: 'genie-os'],
