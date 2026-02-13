@@ -1,0 +1,21 @@
+{
+  "name": "openclaw-client",
+  "version": "2026.2.12",
+  "type": "module",
+  "dependencies": {
+    "commander": "^14.0.3",
+    "ws": "^8.19.0",
+    "json5": "^2.2.3",
+    "zod": "^4.3.6",
+    "chalk": "^5.6.2",
+    "dotenv": "^17.2.4",
+    "ajv": "^8.17.1",
+    "@clack/prompts": "^1.0.0",
+    "osc-progress": "^0.3.0",
+    "@sinclair/typebox": "0.34.48",
+    "tslog": "^4.10.2",
+    "@mariozechner/pi-ai": "0.52.9",
+    "proper-lockfile": "^4.1.2",
+    "yaml": "^2.8.2"
+  }
+}

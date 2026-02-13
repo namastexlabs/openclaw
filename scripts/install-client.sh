@@ -147,11 +147,11 @@ download_artifact() {
   mkdir -p "${INSTALL_DIR}/dist-client"
 
   local entry_url="${RAW_BASE}/${ARTIFACT_BRANCH}/${ARTIFACT_PATH}"
-  local wrapper_url="${RAW_BASE}/${ARTIFACT_BRANCH}/${WRAPPER_ENTRY}"
+  local pkg_url="${RAW_BASE}/${ARTIFACT_BRANCH}/dist-client/package.json"
   local dest_entry="${INSTALL_DIR}/dist-client/entry-client.js"
-  local dest_wrapper="${INSTALL_DIR}/openclaw-client.mjs"
+  local dest_pkg="${INSTALL_DIR}/dist-client/package.json"
 
-  # Check if already up to date (simple ETag/size check)
+  # Check if already up to date (simple size check)
   if [[ -f "${dest_entry}" && ${FORCE_BUILD} -eq 0 ]]; then
     local remote_size
     remote_size=$(curl -fsSI "${entry_url}" 2>/dev/null | grep -i content-length | tail -1 | tr -dc '0-9' || echo "0")
@@ -159,6 +159,12 @@ download_artifact() {
     local_size=$(wc -c < "${dest_entry}" 2>/dev/null | tr -dc '0-9' || echo "0")
     if [[ "${remote_size}" -gt 0 && "${remote_size}" == "${local_size}" ]]; then
       log_ok "Client artifact up to date (${local_size} bytes)"
+      # Still ensure deps are installed
+      if [[ ! -d "${INSTALL_DIR}/dist-client/node_modules" ]]; then
+        log_info "Installing dependencies..."
+        (cd "${INSTALL_DIR}/dist-client" && npm install --production --no-fund --no-audit 2>&1 | tail -1)
+        log_ok "Dependencies installed"
+      fi
       return
     fi
   fi
@@ -169,9 +175,13 @@ download_artifact() {
   size=$(wc -c < "${dest_entry}" | tr -dc '0-9')
   log_ok "entry-client.js downloaded (${size} bytes)"
 
-  log_info "Downloading openclaw-client.mjs..."
-  curl -fsSL "${wrapper_url}" -o "${dest_wrapper}" || die "Failed to download ${wrapper_url}"
-  log_ok "openclaw-client.mjs downloaded"
+  log_info "Downloading package.json..."
+  curl -fsSL "${pkg_url}" -o "${dest_pkg}" || die "Failed to download ${pkg_url}"
+  log_ok "package.json downloaded"
+
+  log_info "Installing dependencies (npm)..."
+  (cd "${INSTALL_DIR}/dist-client" && npm install --production --no-fund --no-audit 2>&1 | tail -3)
+  log_ok "Dependencies installed"
 }
 
 # ─── Source mode ──────────────────────────────────────────────────
