@@ -106,8 +106,15 @@ pipeline {
                 sh """
                     ssh -o BatchMode=yes -o ConnectTimeout=10 ${BUILD_HOST} '
                         systemctl --user restart openclaw-gateway
-                        sleep 4
-                        if systemctl --user is-active openclaw-gateway >/dev/null 2>&1; then
+
+                        # Poll for up to 30s instead of fixed sleep (reduces flakiness)
+                        ok=0
+                        for i in $(seq 1 15); do
+                          if systemctl --user is-active openclaw-gateway >/dev/null 2>&1; then ok=1; break; fi
+                          sleep 2
+                        done
+
+                        if [ "$ok" = "1" ]; then
                             echo "LOCAL_GATEWAY_OK"
                         else
                             echo "LOCAL_GATEWAY_FAILED"
@@ -123,7 +130,16 @@ pipeline {
             when { expression { env.SKIP_DEPLOY != 'true' } }
             steps {
                 script {
-                    def hosts = readJSON text: env.FLEET_HOSTS_JSON
+                    def hosts
+                    try {
+                        hosts = new groovy.json.JsonSlurperClassic().parseText(env.FLEET_HOSTS_JSON)
+                    } catch (Exception e) {
+                        error("Invalid OPENCLAW_FLEET_HOSTS_JSON: ${e.message}")
+                    }
+                    if (!(hosts instanceof List) || hosts.size() == 0) {
+                        error('OPENCLAW_FLEET_HOSTS_JSON must be a non-empty JSON array of {ssh,label} objects')
+                    }
+
                     def branches = [:]
 
                     for (h in hosts) {
@@ -144,26 +160,40 @@ pipeline {
         stage('Health Checks') {
             when { expression { env.SKIP_DEPLOY != 'true' } }
             steps {
-                // Wait for slow hosts to finish restarting
-                sleep(time: 15, unit: 'SECONDS')
                 script {
-                    def hosts = readJSON text: env.FLEET_HOSTS_JSON
+                    def hosts
+                    try {
+                        hosts = new groovy.json.JsonSlurperClassic().parseText(env.FLEET_HOSTS_JSON)
+                    } catch (Exception e) {
+                        error("Invalid OPENCLAW_FLEET_HOSTS_JSON: ${e.message}")
+                    }
+                    if (!(hosts instanceof List) || hosts.size() == 0) {
+                        error('OPENCLAW_FLEET_HOSTS_JSON must be a non-empty JSON array of {ssh,label} objects')
+                    }
+
                     def failed = []
 
                     for (h in hosts) {
+                        // Poll each host for up to ~60s after deploy (slow CTs)
                         def rc = sh(
                             script: """
-                                ssh -o BatchMode=yes -o ConnectTimeout=10 ${h.ssh} '\
+                                for i in \$(seq 1 20); do
+                                  ssh -o BatchMode=yes -o ConnectTimeout=10 ${h.ssh} '\
                                     systemctl --user is-active openclaw-gateway >/dev/null 2>&1 || exit 1;\
                                     ss -tlnp 2>/dev/null | grep -q ":18789" || exit 1;\
-                                    echo "HEALTH_OK: ${h.label}"\
-                                '
+                                  ' && exit 0
+                                  sleep 3
+                                done
+                                echo "HEALTH_FAIL: ${h.label}"
+                                exit 1
                             """,
                             returnStatus: true
                         )
                         if (rc != 0) {
                             echo "HEALTH FAILED: ${h.label}"
                             failed.add(h.label)
+                        } else {
+                            echo "HEALTH_OK: ${h.label}"
                         }
                     }
 
