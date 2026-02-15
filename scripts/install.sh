@@ -475,11 +475,23 @@ exec "$HOME/.nvm/versions/node/v24.13.1/bin/node" "/opt/genie/openclaw/dist/inde
     uninstall_global_openclaw_from_npm "npm"
   fi
 
-  local found
+  # Extra hardening: some hosts may have a "ghost" openclaw binary under ~/.local/bin
+  # that is NOT tracked by npm (so npm list -g won't detect it) but still shadows PATH.
+  # If we detect that PATH resolves to ~/.local/bin/openclaw (or similar) instead of the
+  # wrapper, remove it.
+  local found found_real
   found="$(run_target_shell "command -v openclaw || true")"
+  found_real="$(run_target_shell "p=\"\$(command -v openclaw || true)\"; if [ -n \"\$p\" ] && command -v readlink >/dev/null 2>&1; then readlink -f \"\$p\" 2>/dev/null || echo \"\$p\"; else echo \"\$p\"; fi")"
+
   if [[ -n "${found}" && "${found}" != "${WRAPPER_PATH}" ]]; then
-    log_warn "Stock/non-wrapper openclaw found in PATH: ${found}"
+    log_warn "Stock/non-wrapper openclaw found in PATH: ${found} (real: ${found_real})"
     log_warn "Expected wrapper: ${WRAPPER_PATH}"
+
+    if [[ "${found}" == "${TARGET_HOME}/.local/bin/openclaw" || "${found_real}" == *"${TARGET_HOME}/.local/bin/openclaw"* ]]; then
+      log_warn "Removing shadowing ~/.local/bin/openclaw (ghost install)"
+      run_as_target rm -f "${TARGET_HOME}/.local/bin/openclaw" || true
+      log_ok "Removed ${TARGET_HOME}/.local/bin/openclaw"
+    fi
   else
     log_ok "openclaw resolves to wrapper (or will after shell reload)"
   fi

@@ -20,8 +20,16 @@ pipeline {
         // Use workspace path (Jenkins checkout), not build-host absolute path
         INSTALL_SCRIPT = 'scripts/install.sh'
         BRANCH       = 'namastex/main'
-        // genie-os is the build host — Jenkins SSHes there to build, then fans out
-        BUILD_HOST   = 'genie@10.114.1.111'
+
+        // SECURITY: do not hardcode internal SSH targets/IPs in this repo.
+        // Configure these via Jenkins credentials (Secret text) instead.
+        //
+        // Expected credentials:
+        // - OPENCLAW_BUILD_HOST (secret text) -> e.g. "genie@<build-host>"
+        // - OPENCLAW_FLEET_HOSTS_JSON (secret text) -> JSON array:
+        //   [{"ssh":"user@host","label":"cegonha"}, ...]
+        BUILD_HOST = credentials('OPENCLAW_BUILD_HOST')
+        FLEET_HOSTS_JSON = credentials('OPENCLAW_FLEET_HOSTS_JSON')
     }
 
     stages {
@@ -113,27 +121,22 @@ pipeline {
 
         stage('Deploy Fleet') {
             when { expression { env.SKIP_DEPLOY != 'true' } }
-            parallel {
-                stage('cegonha (121)') {
-                    steps { deployHost('genie@10.114.1.121', 'cegonha') }
-                }
-                stage('stefani (124)') {
-                    steps { deployHost('genie@10.114.1.124', 'stefani') }
-                }
-                stage('gus (126)') {
-                    steps { deployHost('genie@10.114.1.126', 'gus') }
-                }
-                stage('luis (131)') {
-                    steps { deployHost('genie@10.114.1.131', 'luis') }
-                }
-                stage('sampaio (154)') {
-                    steps { deployHost('genie@10.114.1.154', 'sampaio') }
-                }
-                stage('juice (119)') {
-                    steps { deployHost('openclaw@10.114.1.119', 'juice') }
-                }
-                stage('omni-prod (140)') {
-                    steps { deployHost('genie@10.114.1.140', 'omni-prod') }
+            steps {
+                script {
+                    def hosts = readJSON text: env.FLEET_HOSTS_JSON
+                    def branches = [:]
+
+                    for (h in hosts) {
+                        def sshTarget = h.ssh
+                        def label = h.label
+                        branches[label] = {
+                            stage("${label}") {
+                                deployHost(sshTarget, label)
+                            }
+                        }
+                    }
+
+                    parallel branches
                 }
             }
         }
@@ -144,32 +147,23 @@ pipeline {
                 // Wait for slow hosts to finish restarting
                 sleep(time: 15, unit: 'SECONDS')
                 script {
-                    def hosts = [
-                        [ssh: 'genie@10.114.1.111', name: 'genie-os'],
-                        [ssh: 'genie@10.114.1.121', name: 'cegonha'],
-                        [ssh: 'genie@10.114.1.124', name: 'stefani'],
-                        [ssh: 'genie@10.114.1.126', name: 'gus'],
-                        [ssh: 'genie@10.114.1.131', name: 'luis'],
-                        [ssh: 'genie@10.114.1.154', name: 'sampaio'],
-                        [ssh: 'openclaw@10.114.1.119', name: 'juice'],
-                        [ssh: 'genie@10.114.1.140', name: 'omni-prod'],
-                    ]
+                    def hosts = readJSON text: env.FLEET_HOSTS_JSON
                     def failed = []
 
                     for (h in hosts) {
                         def rc = sh(
                             script: """
-                                ssh -o BatchMode=yes -o ConnectTimeout=10 ${h.ssh} '
-                                    systemctl --user is-active openclaw-gateway >/dev/null 2>&1 || exit 1
-                                    ss -tlnp 2>/dev/null | grep -q ":18789" || exit 1
-                                    echo "HEALTH_OK: ${h.name}"
+                                ssh -o BatchMode=yes -o ConnectTimeout=10 ${h.ssh} '\
+                                    systemctl --user is-active openclaw-gateway >/dev/null 2>&1 || exit 1;\
+                                    ss -tlnp 2>/dev/null | grep -q ":18789" || exit 1;\
+                                    echo "HEALTH_OK: ${h.label}"\
                                 '
                             """,
                             returnStatus: true
                         )
                         if (rc != 0) {
-                            echo "HEALTH FAILED: ${h.name}"
-                            failed.add(h.name)
+                            echo "HEALTH FAILED: ${h.label}"
+                            failed.add(h.label)
                         }
                     }
 
@@ -177,7 +171,7 @@ pipeline {
                         currentBuild.description = "Health check failed: ${failed.join(', ')}"
                         error("Health checks failed on: ${failed.join(', ')}")
                     } else {
-                        currentBuild.description = "Deployed to all 8 hosts ✅"
+                        currentBuild.description = "Deployed to all fleet hosts ✅"
                     }
                 }
             }
